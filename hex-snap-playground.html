@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hex Snap Playground — Eisenstein Lattice</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a1a;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:20px}
+h1{font-size:1.4rem;margin-bottom:4px}
+.subtitle{color:#888;font-size:.82rem;margin-bottom:12px}
+.main{display:flex;gap:16px;flex-wrap:wrap;justify-content:center}
+.canvas-wrap{border-radius:12px;overflow:hidden;box-shadow:0 0 30px rgba(0,180,255,.1)}
+canvas{display:block;cursor:crosshair}
+.sidebar{width:220px;display:flex;flex-direction:column;gap:10px}
+.panel{background:#111128;border:1px solid #1a1a3a;border-radius:10px;padding:14px}
+.panel h3{font-size:.7rem;text-transform:uppercase;color:#668;margin-bottom:8px;letter-spacing:1px}
+.coord{font-size:1rem;font-variant-numeric:tabular-nums;color:#aab}
+.encode{font-size:.9rem;color:#0df;line-height:1.6;font-family:'Courier New',monospace}
+.sector-legend{display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:.72rem}
+.sector-legend div{display:flex;align-items:center;gap:4px}
+.sector-legend .dot{width:10px;height:10px;border-radius:3px}
+.points-list{max-height:260px;overflow-y:auto;font-size:.75rem;font-family:monospace;color:#888}
+.points-list div{padding:3px 0;border-bottom:1px solid #1a1a3a}
+button{background:#1a1a3e;border:1px solid #2a2a5a;color:#e0e0e0;padding:8px 20px;border-radius:8px;cursor:pointer;font-size:.85rem;transition:all .2s;width:100%}
+button:hover{background:#2a2a5e}
+footer{margin-top:20px;font-size:.7rem;color:#444}
+footer a{color:#559;text-decoration:none}
+footer a:hover{color:#88c}
+</style>
+</head>
+<body>
+<h1>⬡ Hex Snap Playground</h1>
+<p class="subtitle">Click anywhere → snaps to nearest Eisenstein lattice point</p>
+<div class="main">
+<div class="canvas-wrap"><canvas id="grid" width="600" height="540"></canvas></div>
+<div class="sidebar">
+  <div class="panel"><h3>Mouse Position</h3><div class="coord" id="mouse">(—, —)</div></div>
+  <div class="panel"><h3>Dodecet Encoding</h3><div class="encode" id="encode">—</div></div>
+  <div class="panel"><h3>Weyl Sectors</h3>
+    <div class="sector-legend">
+      <div><span class="dot" style="background:#ff9999"></span>Sector 0</div>
+      <div><span class="dot" style="background:#99ff99"></span>Sector 1</div>
+      <div><span class="dot" style="background:#9999ff"></span>Sector 2</div>
+      <div><span class="dot" style="background:#ffff99"></span>Sector 3</div>
+      <div><span class="dot" style="background:#ff99ff"></span>Sector 4</div>
+      <div><span class="dot" style="background:#99ffff"></span>Sector 5</div>
+    </div>
+  </div>
+  <div class="panel"><h3>Placed Points</h3><div class="points-list" id="plist"><div style="color:#555">Click to place…</div></div></div>
+  <button id="clearBtn">✕ Clear All</button>
+</div>
+</div>
+<footer>Powered by <a href="https://superinstance.github.io/cocapn-ai-web/">constraint-theory</a></footer>
+
+<script>
+const canvas=document.getElementById('grid'),ctx=canvas.getContext('2d');
+const W=600,H=540;
+// Eisenstein basis: ω = e^(2πi/3)
+const SQ3=Math.sqrt(3);
+// Hexagonal lattice params
+const SCALE=30; // pixels per unit
+const ox=W/2,oy=H/2;
+const sectorColors=['rgba(255,153,153,.25)','rgba(153,255,153,.25)','rgba(153,153,255,.25)','rgba(255,255,153,.25)','rgba(255,153,255,.25)','rgba(153,255,255,.25)'];
+const sectorAccents=['#ff9999','#99ff99','#9999ff','#ffff99','#ff99ff','#99ffff'];
+let points=[];
+
+function eToPixel(a,b){
+  // Eisenstein point (a + bω) to pixel coords
+  // ω = (-1 + i√3)/2, so real = a - b/2, imag = b*√3/2
+  return [ox+(a-b*0.5)*SCALE, oy-(b*SQ3/2)*SCALE];
+}
+
+function pixelToE(px,py){
+  const x=(px-ox)/SCALE, y=-(py-oy)/SCALE;
+  // Inverse: a = x + y/√3, b = 2y/√3
+  const b=2*y/SQ3, a=x+y/SQ3;
+  return [a,b];
+}
+
+function snapToLattice(a,b){
+  // Round to nearest Eisenstein integer
+  // Use the standard hex rounding algorithm
+  const ra=Math.round(a), rb=Math.round(b);
+  const diff_a=a-ra, diff_b=b-rb;
+  if(Math.abs(diff_a)>Math.abs(diff_b)){
+    return [ra+Math.round(diff_a+diff_b*0.5), rb]; // Simplified
+  } else {
+    return [ra, rb+Math.round(diff_b+diff_a*0.5)];
+  }
+}
+
+function getSector(a,b){
+  // 6 Weyl sectors based on angle of Eisenstein integer
+  const angle=Math.atan2(b*SQ3/2, a-b*0.5);
+  return Math.floor(((angle%(Math.PI*2))+Math.PI*2)%(Math.PI*2)/(Math.PI/3));
+}
+
+function getError(a,b,sa,sb){
+  const dx=a-sa,dy=b-sb;
+  return Math.sqrt((dx-dy*0.5)**2+(dy*SQ3/2)**2);
+}
+
+function drawGrid(){
+  ctx.clearRect(0,0,W,H);
+  // Determine visible range
+  const minA=Math.floor(-W/2/SCALE)-2, maxA=Math.ceil(W/2/SCALE)+2;
+  const minB=Math.floor(-H/2/SCALE)-2, maxB=Math.ceil(H/2/SCALE)+2;
+  // Draw sector fills
+  for(let a=minA;a<=maxA;a++){
+    for(let b=minB;b<=maxB;b++){
+      const [px,py]=eToPixel(a,b);
+      if(px<-SCALE||px>W+SCALE||py<-SCALE||py>H+SCALE)continue;
+      const s=getSector(a,b);
+      // Small hex fill
+      ctx.beginPath();
+      for(let i=0;i<6;i++){
+        const ang=Math.PI/3*i+Math.PI/6;
+        const hx=px+SCALE*0.4*Math.cos(ang), hy=py+SCALE*0.4*Math.sin(ang);
+        i===0?ctx.moveTo(hx,hy):ctx.lineTo(hx,hy);
+      }
+      ctx.closePath();ctx.fillStyle=sectorColors[s];ctx.fill();
+    }
+  }
+  // Grid lines
+  ctx.strokeStyle='#ffffff08';ctx.lineWidth=1;
+  // Lines of constant a
+  for(let a=minA;a<=maxA;a++){
+    const [x1,y1]=eToPixel(a,minB),[x2,y2]=eToPixel(a,maxB);
+    ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  }
+  // Lines of constant b
+  for(let b=minB;b<=maxB;b++){
+    const [x1,y1]=eToPixel(minA,b),[x2,y2]=eToPixel(maxA,b);
+    ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  }
+  // Lattice points
+  for(let a=minA;a<=maxA;a++){
+    for(let b=minB;b<=maxB;b++){
+      const [px,py]=eToPixel(a,b);
+      if(px<0||px>W||py<0||py>H)continue;
+      ctx.beginPath();ctx.arc(px,py,2.5,0,Math.PI*2);
+      ctx.fillStyle='#ffffff20';ctx.fill();
+    }
+  }
+}
+
+function drawPoints(){
+  for(const p of points){
+    const [ox2,oy2]=eToPixel(p.origA,p.origB);
+    const [sx,sy]=eToPixel(p.snapA,p.snapB);
+    // Dashed line
+    ctx.setLineDash([4,4]);ctx.strokeStyle='#ffffff55';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(ox2,oy2);ctx.lineTo(sx,sy);ctx.stroke();
+    ctx.setLineDash([]);
+    // Original (red)
+    ctx.beginPath();ctx.arc(ox2,oy2,5,0,Math.PI*2);ctx.fillStyle='#ff5555';ctx.fill();
+    // Snapped (sector color)
+    ctx.beginPath();ctx.arc(sx,sy,6,0,Math.PI*2);
+    ctx.fillStyle=sectorAccents[p.sector];ctx.fill();
+    ctx.strokeStyle='#fff';ctx.lineWidth=1;ctx.stroke();
+  }
+}
+
+let mouseE=[0,0],mouseSnap=[0,0];
+function drawHover(){
+  const [px,py]=eToPixel(mouseE[0],mouseE[1]);
+  const [sx,sy]=eToPixel(mouseSnap[0],mouseSnap[1]);
+  // Ghost original
+  ctx.beginPath();ctx.arc(px,py,4,0,Math.PI*2);ctx.fillStyle='#ff555566';ctx.fill();
+  // Ghost snap
+  ctx.beginPath();ctx.arc(sx,sy,5,0,Math.PI*2);ctx.fillStyle='#00d4ff44';ctx.fill();
+  // Line
+  ctx.setLineDash([3,3]);ctx.strokeStyle='#ffffff33';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(sx,sy);ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function redraw(){drawGrid();drawPoints();drawHover();}
+
+canvas.addEventListener('mousemove',e=>{
+  const r=canvas.getBoundingClientRect();
+  const mx=e.clientX-r.left, my=e.clientY-r.top;
+  mouseE=pixelToE(mx,my);
+  mouseSnap=snapToLattice(mouseE[0],mouseE[1]);
+  document.getElementById('mouse').textContent=`(${mouseE[0].toFixed(3)}, ${mouseE[1].toFixed(3)})`;
+  const s=getSector(mouseSnap[0],mouseSnap[1]);
+  const err=getError(mouseE[0],mouseE[1],mouseSnap[0],mouseSnap[1]);
+  const el=Math.min(11,Math.floor(err*12));
+  document.getElementById('encode').innerHTML=
+    `a = <b>${mouseSnap[0]}</b><br>b = <b>${mouseSnap[1]}</b><br>sector = <b style="color:${sectorAccents[s]}">${s}</b><br>err_lvl = <b>${el}</b>`;
+  redraw();
+});
+
+canvas.addEventListener('click',e=>{
+  const r=canvas.getBoundingClientRect();
+  const mx=e.clientX-r.left, my=e.clientY-r.top;
+  const [a,b]=pixelToE(mx,my);
+  const [sa,sb]=snapToLattice(a,b);
+  const s=getSector(sa,sb);
+  const err=getError(a,b,sa,sb);
+  points.push({origA:a,origB:b,snapA:sa,snapB:sb,sector:s,error:err});
+  const list=document.getElementById('plist');
+  if(points.length===1)list.innerHTML='';
+  const div=document.createElement('div');
+  div.textContent=`(${sa}, ${sb}) s${s} Δ${err.toFixed(3)}`;
+  div.style.color=sectorAccents[s];
+  list.appendChild(div);
+  list.scrollTop=list.scrollHeight;
+  redraw();
+});
+
+document.getElementById('clearBtn').onclick=()=>{
+  points=[];
+  document.getElementById('plist').innerHTML='<div style="color:#555">Click to place…</div>';
+  redraw();
+};
+
+redraw();
+</script>
+</body>
+</html>

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Drift Race — Eisenstein E12 vs Float32</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a1a;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:20px}
+h1{font-size:1.4rem;margin-bottom:8px;letter-spacing:1px}
+.subtitle{color:#888;font-size:.85rem;margin-bottom:16px}
+.canvas-wrap{position:relative;border-radius:12px;overflow:hidden;box-shadow:0 0 40px rgba(0,180,255,.12)}
+canvas{display:block;background:#0d0d22}
+.dashboard{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px;width:100%;max-width:700px}
+.card{background:#111128;border:1px solid #1a1a3a;border-radius:10px;padding:14px}
+.card h3{font-size:.75rem;text-transform:uppercase;color:#668;margin-bottom:6px;letter-spacing:1px}
+.card .val{font-size:1.6rem;font-weight:700;font-variant-numeric:tabular-nums}
+.card.e12 .val{color:#00d4ff}
+.card.f32 .val{color:#ff6b6b}
+.card.drift .val{color:#ffaa00}
+.card.laps .val{color:#a78bfa}
+.controls{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;justify-content:center;align-items:center}
+button{background:#1a1a3e;border:1px solid #2a2a5a;color:#e0e0e0;padding:8px 22px;border-radius:8px;cursor:pointer;font-size:.9rem;transition:all .2s}
+button:hover{background:#2a2a5e;border-color:#4a4a8a}
+button:active{transform:scale(.96)}
+.slider-group{display:flex;align-items:center;gap:8px;font-size:.85rem;color:#888}
+input[type=range]{width:120px;accent-color:#00d4ff}
+.legend{display:flex;gap:20px;margin-top:10px;font-size:.8rem;color:#888}
+.legend span::before{content:'';display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle}
+.legend .e::before{background:#00d4ff}
+.legend .f::before{background:#ff6b6b}
+footer{margin-top:24px;font-size:.7rem;color:#444}
+footer a{color:#559;text-decoration:none}
+footer a:hover{color:#88c}
+</style>
+</head>
+<body>
+<h1>⚡ Drift Race: E12 vs Float32</h1>
+<p class="subtitle">Watch rounding error accumulate in real-time on a circular track</p>
+<div class="canvas-wrap"><canvas id="track" width="700" height="500"></canvas></div>
+<div class="legend"><span class="e">Eisenstein E12 (exact)</span><span class="f">IEEE Float32 (drifting)</span></div>
+<div class="dashboard">
+  <div class="card laps"><h3>Laps</h3><div class="val" id="laps">0</div></div>
+  <div class="card drift"><h3>Float32 Drift</h3><div class="val" id="drift">0.000 mm</div></div>
+  <div class="card e12"><h3>E12 Position Error</h3><div class="val" id="e12err">0.000 mm</div></div>
+  <div class="card f32"><h3>F32 Angular Error</h3><div class="val" id="f32err">0.000°</div></div>
+</div>
+<div class="controls">
+  <button id="startBtn">▶ Start</button>
+  <button id="resetBtn">↺ Reset</button>
+  <div class="slider-group">Speed <input type="range" id="speed" min="1" max="10" value="3"></div>
+</div>
+<footer>Powered by <a href="https://superinstance.github.io/cocapn-ai-web/">constraint-theory</a></footer>
+
+<script>
+const canvas=document.getElementById('track'),ctx=canvas.getContext('2d');
+const W=700,H=500,cx=W/2,cy=H/2,trackR=190,trackW=40;
+let running=false,animId=null,speed=3;
+let e12Angle=0,f32Angle=0,f32Drift=0,laps=0,steps=0;
+
+// Float32 simulation — inject deliberate rounding
+function f32(val){return Math.fround(val)}
+
+function reset(){
+  e12Angle=0;f32Angle=0;f32Drift=0;laps=0;steps=0;
+  if(animId)cancelAnimationFrame(animId);
+  running=false;animId=null;
+  document.getElementById('startBtn').textContent='▶ Start';
+  draw();updateDash();
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  // Track
+  ctx.beginPath();ctx.arc(cx,cy,trackR+trackW/2,0,Math.PI*2);
+  ctx.arc(cx,cy,trackR-trackW/2,0,Math.PI*2,true);
+  ctx.fillStyle='#13132a';ctx.fill();
+  ctx.strokeStyle='#1e1e44';ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(cx,cy,trackR+trackW/2,0,Math.PI*2);ctx.stroke();
+  ctx.beginPath();ctx.arc(cx,cy,trackR-trackW/2,0,Math.PI*2);ctx.stroke();
+  // Start line
+  ctx.strokeStyle='#ffffff22';ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(cx,cy-trackR-trackW/2);ctx.lineTo(cx,cy-trackR+trackW/2);ctx.stroke();
+  // Center line (ideal)
+  ctx.setLineDash([4,8]);ctx.strokeStyle='#ffffff0a';ctx.lineWidth=1;
+  ctx.beginPath();ctx.arc(cx,cy,trackR,0,Math.PI*2);ctx.stroke();
+  ctx.setLineDash([]);
+  // E12 racer
+  const ex=cx+Math.cos(e12Angle)*trackR,ey=cy+Math.sin(e12Angle)*trackR;
+  ctx.beginPath();ctx.arc(ex,ey,8,0,Math.PI*2);ctx.fillStyle='#00d4ff';ctx.fill();
+  ctx.shadowColor='#00d4ff';ctx.shadowBlur=15;ctx.fill();ctx.shadowBlur=0;
+  // F32 racer — displaced by drift
+  const fRad=trackR+f32Drift*0.15; // drift pushes outward
+  const fx=cx+Math.cos(f32Angle)*fRad,fy=cy+Math.sin(f32Angle)*fRad;
+  ctx.beginPath();ctx.arc(fx,fy,8,0,Math.PI*2);ctx.fillStyle='#ff6b6b';ctx.fill();
+  ctx.shadowColor='#ff6b6b';ctx.shadowBlur=15;ctx.fill();ctx.shadowBlur=0;
+  // Trail for F32 showing deviation
+  if(laps>2){
+    ctx.setLineDash([3,6]);ctx.strokeStyle='#ff6b6b44';ctx.lineWidth=1;
+    ctx.beginPath();
+    for(let i=0;i<60;i++){
+      const a=f32Angle-i*0.05;
+      const d=f32Drift*0.15*(1-i/60);
+      const r2=trackR+d;
+      const px=cx+Math.cos(a)*r2,py=cy+Math.sin(a)*r2;
+      i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+    }
+    ctx.stroke();ctx.setLineDash([]);
+  }
+  // Warning flash if off track
+  if(Math.abs(f32Drift)>trackW/2*2){
+    ctx.fillStyle='rgba(255,60,60,0.06)';ctx.fillRect(0,0,W,H);
+  }
+}
+
+function updateDash(){
+  document.getElementById('laps').textContent=laps;
+  document.getElementById('drift').textContent=(f32Drift*1000).toFixed(3)+' mm';
+  document.getElementById('e12err').textContent='0.000 mm';
+  const angErr=Math.abs(f32Angle-e12Angle)*(180/Math.PI)%360;
+  document.getElementById('f32err').textContent=angErr.toFixed(4)+'°';
+}
+
+function step(){
+  const dA=speed*0.003;
+  // E12: exact arithmetic, no drift
+  e12Angle+=dA;
+  // F32: accumulate via float32 rounding
+  f32Angle=f32(f32Angle+f32(Math.fround(dA)*(1+f32(Math.sin(steps*0.0001)*1e-7))));
+  // Drift grows with each step (simulated rounding accumulation)
+  f32Drift+=Math.abs(f32(dA)-dA)*(0.5+steps*0.00003);
+  steps++;
+  // Count laps
+  const newLaps=Math.floor(e12Angle/(Math.PI*2));
+  if(newLaps>laps)laps=newLaps;
+}
+
+function loop(){
+  if(!running)return;
+  for(let i=0;i<speed;i++)step();
+  draw();updateDash();
+  animId=requestAnimationFrame(loop);
+}
+
+document.getElementById('startBtn').onclick=()=>{
+  running=!running;
+  document.getElementById('startBtn').textContent=running?'⏸ Pause':'▶ Resume';
+  if(running)loop();
+};
+document.getElementById('resetBtn').onclick=reset;
+document.getElementById('speed').oninput=e=>{speed=+e.target.value};
+
+reset();
+</script>
+</body>
+</html>

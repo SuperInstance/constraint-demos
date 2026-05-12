@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Constraint Funnel — Temporal Intelligence</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a1a;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:20px}
+h1{font-size:1.4rem;margin-bottom:4px}
+.subtitle{color:#888;font-size:.82rem;margin-bottom:14px}
+.top-row{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;align-items:flex-start}
+.canvas-wrap{border-radius:12px;overflow:hidden;box-shadow:0 0 30px rgba(0,180,255,.1)}
+canvas{display:block}
+.right-panel{width:280px;display:flex;flex-direction:column;gap:10px}
+.gauge{background:#111128;border:1px solid #1a1a3a;border-radius:10px;padding:14px;text-align:center}
+.gauge h3{font-size:.7rem;text-transform:uppercase;color:#668;letter-spacing:1px;margin-bottom:6px}
+.gauge .val{font-size:2rem;font-weight:700;font-variant-numeric:tabular-nums}
+.phase-badge{display:inline-block;padding:4px 14px;border-radius:20px;font-size:.85rem;font-weight:600;margin-top:4px}
+.sliders{background:#111128;border:1px solid #1a1a3a;border-radius:10px;padding:14px}
+.sliders h3{font-size:.7rem;text-transform:uppercase;color:#668;letter-spacing:1px;margin-bottom:10px}
+.slider-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:.78rem}
+.slider-row label{color:#888;min-width:130px}
+.slider-row input[type=range]{width:100px;accent-color:#00d4ff}
+.slider-row .sv{color:#aab;min-width:38px;text-align:right;font-variant-numeric:tabular-nums}
+.status-bar{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-top:12px}
+.stat{background:#111128;border:1px solid #1a1a3a;border-radius:8px;padding:8px 16px;font-size:.8rem;text-align:center}
+.stat .label{color:#668;font-size:.65rem;text-transform:uppercase;letter-spacing:1px}
+.stat .v{font-size:1.1rem;font-weight:600;margin-top:2px}
+.controls{margin-top:12px;display:flex;gap:10px}
+button{background:#1a1a3e;border:1px solid #2a2a5a;color:#e0e0e0;padding:8px 22px;border-radius:8px;cursor:pointer;font-size:.85rem;transition:all .2s}
+button:hover{background:#2a2a5e}
+footer{margin-top:20px;font-size:.7rem;color:#444}
+footer a{color:#559;text-decoration:none}
+footer a:hover{color:#88c}
+</style>
+</head>
+<body>
+<h1>🔽 Constraint Funnel</h1>
+<p class="subtitle">Temporal intelligence: Approach → Narrowing → SnapImminent → Crystallized</p>
+<div class="top-row">
+  <div class="canvas-wrap"><canvas id="funnel" width="500" height="420"></canvas></div>
+  <div class="right-panel">
+    <div class="gauge">
+      <h3>Phase</h3>
+      <div class="phase-badge" id="phase" style="background:#1a3a1a;color:#4f4">Approach</div>
+    </div>
+    <div class="gauge">
+      <h3>Temperature</h3>
+      <div class="val" id="temp" style="color:#ff8844">1.000</div>
+    </div>
+    <div class="sliders">
+      <h3>Control Knobs</h3>
+      <div class="slider-row"><label>decay_rate</label><input type="range" id="s_decay" min="1" max="100" value="30"><span class="sv" id="sv_decay">0.30</span></div>
+      <div class="slider-row"><label>prediction_horizon</label><input type="range" id="s_pred" min="1" max="100" value="50"><span class="sv" id="sv_pred">0.50</span></div>
+      <div class="slider-row"><label>anomaly_sigma</label><input type="range" id="s_sigma" min="1" max="100" value="20"><span class="sv" id="sv_sigma">0.20</span></div>
+      <div class="slider-row"><label>learning_rate</label><input type="range" id="s_lr" min="1" max="100" value="40"><span class="sv" id="sv_lr">0.40</span></div>
+      <div class="slider-row"><label>chirality_lock</label><input type="range" id="s_chiral" min="1" max="100" value="50"><span class="sv" id="sv_chiral">0.50</span></div>
+      <div class="slider-row"><label>merge_trust</label><input type="range" id="s_merge" min="1" max="100" value="60"><span class="sv" id="sv_merge">0.60</span></div>
+    </div>
+    <div class="controls">
+      <button id="resetBtn">↺ Reset</button>
+      <button id="anomalyBtn">⚡ Inject Anomaly</button>
+    </div>
+  </div>
+</div>
+<div class="status-bar">
+  <div class="stat"><div class="label">Convergence</div><div class="v" id="conv">0.0%</div></div>
+  <div class="stat"><div class="label">Tc Crossed</div><div class="v" id="tcross">No</div></div>
+  <div class="stat"><div class="label">Action</div><div class="v" id="action">Tracking</div></div>
+</div>
+<footer>Powered by <a href="https://superinstance.github.io/cocapn-ai-web/">constraint-theory</a></footer>
+
+<script>
+const canvas=document.getElementById('funnel'),ctx=canvas.getContext('2d');
+const W=500,H=420;
+
+let t=0,anomalyTimer=0,phase=0;
+const Tc=0.15;
+const phases=['Approach','Narrowing','SnapImminent','Crystallized'];
+const phaseColors=['#4f4','#ff0','#f80','#0df'];
+const phaseBg=['#1a3a1a','#3a3a1a','#3a2a1a','#1a2a3a'];
+
+// Knobs
+function knob(id){return +document.getElementById(id).value/100}
+function initSliders(){
+  ['s_decay','s_pred','s_sigma','s_lr','s_chiral','s_merge'].forEach(id=>{
+    const el=document.getElementById(id);
+    const svId='sv_'+id.replace('s_','');
+    el.oninput=()=>{document.getElementById(svId).textContent=(el.value/100).toFixed(2)};
+  });
+}
+
+function getTemp(){
+  const decay=knob('s_decay');
+  return Math.exp(-t*decay*0.003)+anomalyTimer*0.5;
+}
+
+function getPhase(temp){
+  if(temp>0.6)return 0;
+  if(temp>0.3)return 1;
+  if(temp>Tc)return 2;
+  return 3;
+}
+
+function drawFunnel(temp,ph){
+  ctx.clearRect(0,0,W,H);
+  const segments=100;
+  const funnelLen=W-80;
+  const startX=40;
+  // Funnel shape
+  const topWidth=180,bottomWidth=12;
+  const midY=H/2;
+  const phaseColors2=['rgba(80,255,80,.08)','rgba(255,255,80,.08)','rgba(255,160,50,.08)','rgba(0,200,255,.08)'];
+
+  for(let i=0;i<segments;i++){
+    const frac=i/segments;
+    const x=startX+frac*funnelLen;
+    const hw=topWidth/2*(1-frac)+bottomWidth/2*frac;
+    // Phase color zones
+    const zone=frac<0.25?0:frac<0.5?1:frac<0.75?2:3;
+    ctx.fillStyle=phaseColors2[zone];
+    ctx.fillRect(x,midY-hw,funnelLen/segments+1,hw*2);
+  }
+
+  // Funnel walls
+  ctx.strokeStyle='#ffffff18';ctx.lineWidth=2;
+  ctx.beginPath();
+  for(let i=0;i<=segments;i++){
+    const frac=i/segments;
+    const x=startX+frac*funnelLen;
+    const hw=topWidth/2*(1-frac)+bottomWidth/2*frac;
+    i===0?ctx.moveTo(x,midY-hw):ctx.lineTo(x,midY-hw);
+  }
+  ctx.stroke();
+  ctx.beginPath();
+  for(let i=0;i<=segments;i++){
+    const frac=i/segments;
+    const x=startX+frac*funnelLen;
+    const hw=topWidth/2*(1-frac)+bottomWidth/2*frac;
+    i===0?ctx.moveTo(x,midY+hw):ctx.lineTo(x,midY+hw);
+  }
+  ctx.stroke();
+
+  // Phase labels
+  ctx.font='11px system-ui';ctx.textAlign='center';
+  const labels=['APPROACH','NARROWING','SNAP\nIMMINENT','CRYSTALLIZED'];
+  for(let i=0;i<4;i++){
+    const lx=startX+(i+0.5)*funnelLen/4;
+    ctx.fillStyle=phaseColors[i]+'88';
+    ctx.fillText(phases[i].toUpperCase(),lx,midY+topWidth/2*(1-(i+0.5)/4)+22);
+  }
+
+  // Signal dot position based on phase
+  const dotFrac=Math.min(1,ph/3*0.85+((t%200)/200)*0.15);
+  const dotX=startX+dotFrac*funnelLen;
+  const dotHW=topWidth/2*(1-dotFrac)+bottomWidth/2*dotFrac;
+  // Add oscillation
+  const osc=Math.sin(t*0.1)*dotHW*0.3*temp;
+  const dotY=midY+osc;
+  const dotColor=phaseColors[ph];
+
+  // Glow
+  const grad=ctx.createRadialGradient(dotX,dotY,0,dotX,dotY,25);
+  grad.addColorStop(0,dotColor+'66');
+  grad.addColorStop(1,dotColor+'00');
+  ctx.fillStyle=grad;ctx.fillRect(dotX-25,dotY-25,50,50);
+
+  // Dot
+  ctx.beginPath();ctx.arc(dotX,dotY,7,0,Math.PI*2);ctx.fillStyle=dotColor;ctx.fill();
+
+  // Anomaly flash
+  if(anomalyTimer>0){
+    ctx.fillStyle=`rgba(255,50,50,${anomalyTimer*0.3})`;
+    ctx.fillRect(0,0,W,H);
+    ctx.font='bold 16px system-ui';ctx.textAlign='center';ctx.fillStyle='#ff5555';
+    ctx.fillText('⚠ ANOMALY DETECTED',W/2,30);
+  }
+
+  // Tc line
+  const tcFrac=0.75; // where Tc sits
+  const tcX=startX+tcFrac*funnelLen;
+  ctx.setLineDash([4,4]);ctx.strokeStyle='#ff00ff44';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(tcX,midY-topWidth/2*(1-tcFrac)-10);ctx.lineTo(tcX,midY+topWidth/2*(1-tcFrac)+10);ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font='10px system-ui';ctx.fillStyle='#ff00ff66';ctx.textAlign='center';
+  ctx.fillText('Tc ≈ 0.15',tcX,midY-topWidth/2*(1-tcFrac)-16);
+
+  // Potts visualization (small)
+  const pX=W-70,pY=40,pS=30;
+  ctx.strokeStyle='#ffffff15';ctx.lineWidth=1;
+  ctx.strokeRect(pX-pS,pY-pS,pS*2,pS*2);
+  ctx.font='9px system-ui';ctx.fillStyle='#666';ctx.textAlign='center';
+  ctx.fillText('Potts Model',pX,pY-pS-4);
+  // Draw spin grid
+  const n=5;
+  for(let i=0;i<n;i++)for(let j=0;j<n;j++){
+    const sx=pX-pS+(i+0.5)*pS*2/n, sy=pY-pS+(j+0.5)*pS*2/n;
+    const aligned=temp<Tc?Math.random()>temp*2:true;
+    ctx.beginPath();ctx.arc(sx,sy,3,0,Math.PI*2);
+    ctx.fillStyle=aligned?phaseColors[3]+'aa':'#ff555588';ctx.fill();
+  }
+}
+
+function updateUI(temp,ph){
+  const phaseEl=document.getElementById('phase');
+  phaseEl.textContent=phases[ph];
+  phaseEl.style.background=phaseBg[ph];
+  phaseEl.style.color=phaseColors[ph];
+  document.getElementById('temp').textContent=temp.toFixed(3);
+  document.getElementById('temp').style.color=ph>=2?'#0df':'#ff8844';
+  const conv=Math.max(0,(1-temp)*100);
+  document.getElementById('conv').textContent=conv.toFixed(1)+'%';
+  document.getElementById('tcross').textContent=temp<Tc?'✓ Yes':'No';
+  document.getElementById('tcross').style.color=temp<Tc?'#0df':'#888';
+  const actions=['Tracking','Converging','Snapping','Locked'];
+  document.getElementById('action').textContent=actions[ph];
+}
+
+function loop(){
+  t++;
+  if(anomalyTimer>0)anomalyTimer=Math.max(0,anomalyTimer-0.01);
+  const temp=Math.max(0.01,getTemp());
+  const ph=getPhase(temp);
+  drawFunnel(temp,ph);
+  updateUI(temp,ph);
+  requestAnimationFrame(loop);
+}
+
+document.getElementById('resetBtn').onclick=()=>{t=0;anomalyTimer=0};
+document.getElementById('anomalyBtn').onclick=()=>{anomalyTimer=1};
+initSliders();
+loop();
+</script>
+</body>
+</html>
