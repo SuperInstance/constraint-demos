@@ -30,10 +30,24 @@ canvas{display:block}
 .controls{margin-top:12px;display:flex;gap:10px}
 button{background:#1a1a3e;border:1px solid #2a2a5a;color:#e0e0e0;padding:8px 22px;border-radius:8px;cursor:pointer;font-size:.85rem;transition:all .2s}
 button:hover{background:#2a2a5e}
+button.anomaly{background:#3e1a1a;border-color:#5a2a2a}
+button.anomaly:hover{background:#5e2a2a}
 footer{margin-top:20px;font-size:.7rem;color:#444}
 footer a{color:#559;text-decoration:none}
 footer a:hover{color:#88c}
 </style>
+
+<style id="crossnav-style">
+#crossnav{position:fixed;bottom:0;left:0;right:0;z-index:100;background:rgba(8,8,16,.92);backdrop-filter:blur(12px);border-top:1px solid #1a1a30;padding:6px 16px;display:flex;align-items:center;gap:12px;font-family:system-ui,sans-serif;font-size:11px}
+#crossnav .hub{color:#7c5cfc;font-weight:700;text-decoration:none;padding:4px 12px;border-radius:6px;border:1px solid #7c5cfc40;background:#7c5cfc10;transition:all .2s;white-space:nowrap}
+#crossnav .hub:hover{background:#7c5cfc30;border-color:#7c5cfc}
+#crossnav .sep{color:#333}
+#crossnav .link{color:#668;text-decoration:none;padding:3px 8px;border-radius:4px;transition:all .2s;white-space:nowrap}
+#crossnav .link:hover{color:#aab;background:#ffffff08}
+#crossnav .label{color:#444;font-size:10px;text-transform:uppercase;letter-spacing:1px}
+body{padding-bottom:38px!important}
+</style>
+
 </head>
 <body>
 <h1>🔽 Constraint Funnel</h1>
@@ -46,7 +60,7 @@ footer a:hover{color:#88c}
       <div class="phase-badge" id="phase" style="background:#1a3a1a;color:#4f4">Approach</div>
     </div>
     <div class="gauge">
-      <h3>Temperature</h3>
+      <h3>Temperature (T)</h3>
       <div class="val" id="temp" style="color:#ff8844">1.000</div>
     </div>
     <div class="sliders">
@@ -59,15 +73,17 @@ footer a:hover{color:#88c}
       <div class="slider-row"><label>merge_trust</label><input type="range" id="s_merge" min="1" max="100" value="60"><span class="sv" id="sv_merge">0.60</span></div>
     </div>
     <div class="controls">
+      <button id="pauseBtn">⏸ Pause</button>
       <button id="resetBtn">↺ Reset</button>
-      <button id="anomalyBtn">⚡ Inject Anomaly</button>
+      <button class="anomaly" id="anomalyBtn">⚡ Inject Anomaly</button>
     </div>
   </div>
 </div>
 <div class="status-bar">
   <div class="stat"><div class="label">Convergence</div><div class="v" id="conv">0.0%</div></div>
-  <div class="stat"><div class="label">Tc Crossed</div><div class="v" id="tcross">No</div></div>
+  <div class="stat"><div class="label">Below Tc</div><div class="v" id="tcross">No</div></div>
   <div class="stat"><div class="label">Action</div><div class="v" id="action">Tracking</div></div>
+  <div class="stat"><div class="label">Anomalies</div><div class="v" id="anomCount">0</div></div>
 </div>
 <footer>Powered by <a href="https://superinstance.github.io/cocapn-ai-web/">constraint-theory</a></footer>
 
@@ -75,13 +91,25 @@ footer a:hover{color:#88c}
 const canvas=document.getElementById('funnel'),ctx=canvas.getContext('2d');
 const W=500,H=420;
 
-let t=0,anomalyTimer=0,phase=0;
+let t=0,anomalyTimer=0,phase=0,paused=false,anomalyCount=0;
 const Tc=0.15;
 const phases=['Approach','Narrowing','SnapImminent','Crystallized'];
 const phaseColors=['#4f4','#ff0','#f80','#0df'];
 const phaseBg=['#1a3a1a','#3a3a1a','#3a2a1a','#1a2a3a'];
 
-// Knobs
+// Persistent Potts spin grid (4x4, values 0-3)
+const GRID=4;
+let spins=[];
+function initSpins(){
+  spins=[];
+  for(let i=0;i<GRID*GRID;i++)spins.push(Math.floor(Math.random()*4));
+}
+initSpins();
+
+// Track phase history for smooth dot movement
+let dotFrac=0;
+let lastPhaseTime=0;
+
 function knob(id){return +document.getElementById(id).value/100}
 function initSliders(){
   ['s_decay','s_pred','s_sigma','s_lr','s_chiral','s_merge'].forEach(id=>{
@@ -93,7 +121,15 @@ function initSliders(){
 
 function getTemp(){
   const decay=knob('s_decay');
-  return Math.exp(-t*decay*0.003)+anomalyTimer*0.5;
+  const pred=knob('s_pred');
+  const sigma=knob('s_sigma');
+  // decay controls primary cooling rate
+  // pred controls how fast the system "sees ahead" — higher = faster convergence
+  // sigma controls noise floor — higher = more residual noise
+  const baseCooling=Math.exp(-t*decay*0.003*(0.5+pred));
+  const noiseFloor=sigma*0.05;
+  const anomalyBoost=anomalyTimer*0.5;
+  return Math.max(0.01, baseCooling + noiseFloor + anomalyBoost);
 }
 
 function getPhase(temp){
@@ -103,24 +139,71 @@ function getPhase(temp){
   return 3;
 }
 
+function updatePottsSpins(temp){
+  const chiral=knob('s_chiral');
+  const merge=knob('s_merge');
+  const lr=knob('s_lr');
+  
+  // Metropolis-like update: flip probability depends on temperature
+  // Below Tc: spins tend to align (ordered phase)
+  // Above Tc: spins randomize (disordered phase)
+  const alignStrength=temp<Tc ? Math.max(0,(1-temp/Tc)*chiral) : 0;
+  
+  // Pick a random spin to potentially flip
+  const idx=Math.floor(Math.random()*GRID*GRID);
+  const currentSpin=spins[idx];
+  
+  // Count neighbors with each spin value (periodic boundary)
+  const row=Math.floor(idx/GRID), col=idx%GRID;
+  const neighbors=[
+    spins[((row-1+GRID)%GRID)*GRID+col],
+    spins[((row+1)%GRID)*GRID+col],
+    spins[row*GRID+(col-1+GRID)%GRID],
+    spins[row*GRID+(col+1)%GRID]
+  ];
+  
+  // Find most common neighbor spin (consensus)
+  const counts=[0,0,0,0];
+  neighbors.forEach(n=>counts[n]++);
+  const consensus=counts.indexOf(Math.max(...counts));
+  
+  // Flip probability: aligned below Tc, random above
+  const flipRate=0.1*lr; // learning_rate controls update speed
+  if(Math.random()<flipRate){
+    if(temp<Tc && Math.random()<alignStrength){
+      // Align to consensus
+      spins[idx]=consensus;
+    } else if(temp>=Tc){
+      // Random flip
+      spins[idx]=Math.floor(Math.random()*4);
+    }
+    // Merge trust: probability of keeping current spin despite pressure
+    if(Math.random()<merge*0.3){
+      spins[idx]=currentSpin; // revert
+    }
+  }
+}
+
 function drawFunnel(temp,ph){
   ctx.clearRect(0,0,W,H);
   const segments=100;
   const funnelLen=W-80;
   const startX=40;
-  // Funnel shape
   const topWidth=180,bottomWidth=12;
   const midY=H/2;
-  const phaseColors2=['rgba(80,255,80,.08)','rgba(255,255,80,.08)','rgba(255,160,50,.08)','rgba(0,200,255,.08)'];
 
+  // Phase color bands
+  const phaseZoneColors=[
+    'rgba(80,255,80,.06)','rgba(255,255,80,.06)',
+    'rgba(255,160,50,.06)','rgba(0,200,255,.06)'
+  ];
   for(let i=0;i<segments;i++){
     const frac=i/segments;
     const x=startX+frac*funnelLen;
     const hw=topWidth/2*(1-frac)+bottomWidth/2*frac;
-    // Phase color zones
     const zone=frac<0.25?0:frac<0.5?1:frac<0.75?2:3;
-    ctx.fillStyle=phaseColors2[zone];
-    ctx.fillRect(x,midY-hw,funnelLen/segments+1,hw*2);
+    ctx.fillStyle=phaseZoneColors[zone];
+    ctx.fillRect(x,midY-hw,funnelLen/segments+2,hw*2);
   }
 
   // Funnel walls
@@ -143,62 +226,73 @@ function drawFunnel(temp,ph){
   ctx.stroke();
 
   // Phase labels
-  ctx.font='11px system-ui';ctx.textAlign='center';
-  const labels=['APPROACH','NARROWING','SNAP\nIMMINENT','CRYSTALLIZED'];
+  ctx.font='bold 10px system-ui';ctx.textAlign='center';
   for(let i=0;i<4;i++){
     const lx=startX+(i+0.5)*funnelLen/4;
+    const frac=(i+0.5)/4;
+    const wallY=midY-(topWidth/2*(1-frac)+bottomWidth/2*frac);
     ctx.fillStyle=phaseColors[i]+'88';
-    ctx.fillText(phases[i].toUpperCase(),lx,midY+topWidth/2*(1-(i+0.5)/4)+22);
+    ctx.fillText(phases[i].toUpperCase(),lx,wallY-10);
   }
 
-  // Signal dot position based on phase
-  const dotFrac=Math.min(1,ph/3*0.85+((t%200)/200)*0.15);
+  // Tc line
+  const tcFrac=0.75;
+  const tcX=startX+tcFrac*funnelLen;
+  const tcHW=topWidth/2*(1-tcFrac)+bottomWidth/2*tcFrac;
+  ctx.setLineDash([4,4]);ctx.strokeStyle='#ff00ff44';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(tcX,midY-tcHW-8);ctx.lineTo(tcX,midY+tcHW+8);ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font='9px system-ui';ctx.fillStyle='#ff00ff66';ctx.textAlign='center';
+  ctx.fillText('Tc ≈ 0.15',tcX,midY+tcHW+20);
+
+  // Signal dot: smooth movement toward target phase position
+  const targetFrac=ph===3?0.98:(ph/3)*0.85+0.08;
+  dotFrac+=(targetFrac-dotFrac)*0.03; // smooth interpolation
+  
   const dotX=startX+dotFrac*funnelLen;
   const dotHW=topWidth/2*(1-dotFrac)+bottomWidth/2*dotFrac;
-  // Add oscillation
-  const osc=Math.sin(t*0.1)*dotHW*0.3*temp;
+  const oscAmp=temp*0.2;
+  const osc=Math.sin(t*0.08)*dotHW*oscAmp;
   const dotY=midY+osc;
   const dotColor=phaseColors[ph];
 
   // Glow
-  const grad=ctx.createRadialGradient(dotX,dotY,0,dotX,dotY,25);
-  grad.addColorStop(0,dotColor+'66');
-  grad.addColorStop(1,dotColor+'00');
-  ctx.fillStyle=grad;ctx.fillRect(dotX-25,dotY-25,50,50);
+  const grad=ctx.createRadialGradient(dotX,dotY,0,dotX,dotY,30);
+  grad.addColorStop(0,dotColor+'88');grad.addColorStop(1,dotColor+'00');
+  ctx.fillStyle=grad;ctx.beginPath();ctx.arc(dotX,dotY,30,0,Math.PI*2);ctx.fill();
 
   // Dot
-  ctx.beginPath();ctx.arc(dotX,dotY,7,0,Math.PI*2);ctx.fillStyle=dotColor;ctx.fill();
+  ctx.beginPath();ctx.arc(dotX,dotY,7,0,Math.PI*2);
+  ctx.fillStyle=dotColor;ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=1;ctx.stroke();
 
   // Anomaly flash
   if(anomalyTimer>0){
-    ctx.fillStyle=`rgba(255,50,50,${anomalyTimer*0.3})`;
+    ctx.fillStyle=`rgba(255,50,50,${anomalyTimer*0.25})`;
     ctx.fillRect(0,0,W,H);
-    ctx.font='bold 16px system-ui';ctx.textAlign='center';ctx.fillStyle='#ff5555';
-    ctx.fillText('⚠ ANOMALY DETECTED',W/2,30);
+    ctx.font='bold 15px system-ui';ctx.textAlign='center';
+    ctx.fillStyle='#ff5555';
+    ctx.fillText('⚠ ANOMALY DETECTED',W/2,25);
+    ctx.beginPath();ctx.arc(dotX,dotY,14,0,Math.PI*2);
+    ctx.strokeStyle=`rgba(255,50,50,${anomalyTimer*0.6})`;
+    ctx.lineWidth=2;ctx.stroke();
   }
 
-  // Tc line
-  const tcFrac=0.75; // where Tc sits
-  const tcX=startX+tcFrac*funnelLen;
-  ctx.setLineDash([4,4]);ctx.strokeStyle='#ff00ff44';ctx.lineWidth=1;
-  ctx.beginPath();ctx.moveTo(tcX,midY-topWidth/2*(1-tcFrac)-10);ctx.lineTo(tcX,midY+topWidth/2*(1-tcFrac)+10);ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.font='10px system-ui';ctx.fillStyle='#ff00ff66';ctx.textAlign='center';
-  ctx.fillText('Tc ≈ 0.15',tcX,midY-topWidth/2*(1-tcFrac)-16);
-
-  // Potts visualization (small)
-  const pX=W-70,pY=40,pS=30;
-  ctx.strokeStyle='#ffffff15';ctx.lineWidth=1;
+  // Persistent Potts spin grid
+  const pX=W-60,pY=45,pS=25;
+  ctx.strokeStyle='#ffffff10';ctx.lineWidth=1;
   ctx.strokeRect(pX-pS,pY-pS,pS*2,pS*2);
-  ctx.font='9px system-ui';ctx.fillStyle='#666';ctx.textAlign='center';
-  ctx.fillText('Potts Model',pX,pY-pS-4);
-  // Draw spin grid
-  const n=5;
-  for(let i=0;i<n;i++)for(let j=0;j<n;j++){
-    const sx=pX-pS+(i+0.5)*pS*2/n, sy=pY-pS+(j+0.5)*pS*2/n;
-    const aligned=temp<Tc?Math.random()>temp*2:true;
-    ctx.beginPath();ctx.arc(sx,sy,3,0,Math.PI*2);
-    ctx.fillStyle=aligned?phaseColors[3]+'aa':'#ff555588';ctx.fill();
+  ctx.font='8px system-ui';ctx.fillStyle='#555';ctx.textAlign='center';
+  ctx.fillText('Potts',pX,pY-pS-5);
+  const cell=pS*2/GRID;
+  const spinHues=[0,120,240,60];
+  for(let i=0;i<GRID;i++)for(let j=0;j<GRID;j++){
+    const sx=pX-pS+(i+0.5)*cell, sy=pY-pS+(j+0.5)*cell;
+    const spin=spins[i*GRID+j];
+    ctx.fillStyle=`hsla(${spinHues[spin]},80%,50%,0.55)`;
+    ctx.beginPath();
+    ctx.arc(sx,sy,cell*0.3,0,Math.PI*2);
+    ctx.fill();
   }
 }
 
@@ -211,26 +305,59 @@ function updateUI(temp,ph){
   document.getElementById('temp').style.color=ph>=2?'#0df':'#ff8844';
   const conv=Math.max(0,(1-temp)*100);
   document.getElementById('conv').textContent=conv.toFixed(1)+'%';
-  document.getElementById('tcross').textContent=temp<Tc?'✓ Yes':'No';
-  document.getElementById('tcross').style.color=temp<Tc?'#0df':'#888';
+  const belowTc=temp<Tc;
+  document.getElementById('tcross').textContent=belowTc?'✓ Yes':'No';
+  document.getElementById('tcross').style.color=belowTc?'#0df':'#888';
   const actions=['Tracking','Converging','Snapping','Locked'];
   document.getElementById('action').textContent=actions[ph];
+  document.getElementById('anomCount').textContent=anomalyCount;
 }
 
 function loop(){
-  t++;
-  if(anomalyTimer>0)anomalyTimer=Math.max(0,anomalyTimer-0.01);
-  const temp=Math.max(0.01,getTemp());
-  const ph=getPhase(temp);
-  drawFunnel(temp,ph);
-  updateUI(temp,ph);
+  if(!paused){
+    t++;
+    if(anomalyTimer>0)anomalyTimer=Math.max(0,anomalyTimer-0.008);
+    const temp=getTemp();
+    const ph=getPhase(temp);
+    // Update Potts spins (multiple per frame for visible dynamics)
+    for(let i=0;i<3;i++)updatePottsSpins(temp);
+    drawFunnel(temp,ph);
+    updateUI(temp,ph);
+  }
   requestAnimationFrame(loop);
 }
 
-document.getElementById('resetBtn').onclick=()=>{t=0;anomalyTimer=0};
-document.getElementById('anomalyBtn').onclick=()=>{anomalyTimer=1};
+// URL param support — other demos can link with ?decay=0.8&sigma=0.5 etc
+function applyUrlParams(){
+  const p=new URLSearchParams(location.search);
+  const paramMap={decay:'s_decay',pred:'s_pred',sigma:'s_sigma',lr:'s_lr',chiral:'s_chiral',merge:'s_merge'};
+  for(const[k,id]of Object.entries(paramMap)){
+    if(p.has(k)){const v=Math.round(parseFloat(p.get(k))*100);const el=document.getElementById(id);if(el&&v>=1&&v<=100){el.value=v;const svId='sv_'+id.replace('s_','');document.getElementById(svId).textContent=(v/100).toFixed(2);}}
+  }
+  if(p.has('anomaly')){setTimeout(()=>{anomalyTimer=1;anomalyCount++;},500);}
+}
+
+document.getElementById('pauseBtn').onclick=()=>{
+  paused=!paused;
+  document.getElementById('pauseBtn').textContent=paused?'▶ Play':'⏸ Pause';
+};
+document.getElementById('resetBtn').onclick=()=>{
+  t=0;anomalyTimer=0;dotFrac=0;anomalyCount=0;initSpins();
+};
+document.getElementById('anomalyBtn').onclick=()=>{
+  anomalyTimer=1;anomalyCount++;
+};
 initSliders();
+applyUrlParams();
 loop();
 </script>
+
+<div id="crossnav">
+  <a class="hub" href="../simulators/index.html" target="_blank">⚒️ Universe</a>
+  <span class="sep">·</span>
+  <span class="label">Related</span>
+  <a class="link" href="../simulators/fleet-topology.html" target="_blank">🌐 Fleet</a> <a class="link" href="../simulators/flux-vm.html" target="_blank">⚙️ FLUX VM</a> <a class="link" href="../penrose-memory-palace/index.html" target="_blank">🏛️ Palace</a>
+</div>
+
 </body>
 </html>

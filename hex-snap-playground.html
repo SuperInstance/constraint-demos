@@ -15,8 +15,8 @@ canvas{display:block;cursor:crosshair}
 .sidebar{width:220px;display:flex;flex-direction:column;gap:10px}
 .panel{background:#111128;border:1px solid #1a1a3a;border-radius:10px;padding:14px}
 .panel h3{font-size:.7rem;text-transform:uppercase;color:#668;margin-bottom:8px;letter-spacing:1px}
-.coord{font-size:1rem;font-variant-numeric:tabular-nums;color:#aab}
-.encode{font-size:.9rem;color:#0df;line-height:1.6;font-family:'Courier New',monospace}
+.coord{font-size:1.1rem;font-variant-numeric:tabular-nums;color:#ccddff}
+.encode{font-size:.95rem;color:#0df;line-height:1.6;font-family:'Courier New',monospace;text-shadow:0 0 8px rgba(0,212,255,0.3)}
 .sector-legend{display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:.72rem}
 .sector-legend div{display:flex;align-items:center;gap:4px}
 .sector-legend .dot{width:10px;height:10px;border-radius:3px}
@@ -28,6 +28,18 @@ footer{margin-top:20px;font-size:.7rem;color:#444}
 footer a{color:#559;text-decoration:none}
 footer a:hover{color:#88c}
 </style>
+
+<style id="crossnav-style">
+#crossnav{position:fixed;bottom:0;left:0;right:0;z-index:100;background:rgba(8,8,16,.92);backdrop-filter:blur(12px);border-top:1px solid #1a1a30;padding:6px 16px;display:flex;align-items:center;gap:12px;font-family:system-ui,sans-serif;font-size:11px}
+#crossnav .hub{color:#7c5cfc;font-weight:700;text-decoration:none;padding:4px 12px;border-radius:6px;border:1px solid #7c5cfc40;background:#7c5cfc10;transition:all .2s;white-space:nowrap}
+#crossnav .hub:hover{background:#7c5cfc30;border-color:#7c5cfc}
+#crossnav .sep{color:#333}
+#crossnav .link{color:#668;text-decoration:none;padding:3px 8px;border-radius:4px;transition:all .2s;white-space:nowrap}
+#crossnav .link:hover{color:#aab;background:#ffffff08}
+#crossnav .label{color:#444;font-size:10px;text-transform:uppercase;letter-spacing:1px}
+body{padding-bottom:38px!important}
+</style>
+
 </head>
 <body>
 <h1>⬡ Hex Snap Playground</h1>
@@ -36,7 +48,7 @@ footer a:hover{color:#88c}
 <div class="canvas-wrap"><canvas id="grid" width="600" height="540"></canvas></div>
 <div class="sidebar">
   <div class="panel"><h3>Mouse Position</h3><div class="coord" id="mouse">(—, —)</div></div>
-  <div class="panel"><h3>Dodecet Encoding</h3><div class="encode" id="encode">—</div></div>
+  <div class="panel"><h3>Snap Result</h3><div class="encode" id="encode">—</div></div>
   <div class="panel"><h3>Weyl Sectors</h3>
     <div class="sector-legend">
       <div><span class="dot" style="background:#ff9999"></span>Sector 0</div>
@@ -56,109 +68,115 @@ footer a:hover{color:#88c}
 <script>
 const canvas=document.getElementById('grid'),ctx=canvas.getContext('2d');
 const W=600,H=540;
-// Eisenstein basis: ω = e^(2πi/3)
 const SQ3=Math.sqrt(3);
-// Hexagonal lattice params
-const SCALE=30; // pixels per unit
-const ox=W/2,oy=H/2;
-const sectorColors=['rgba(255,153,153,.25)','rgba(153,255,153,.25)','rgba(153,153,255,.25)','rgba(255,255,153,.25)','rgba(255,153,255,.25)','rgba(153,255,255,.25)'];
+const SCALE=30;
+const centerX=W/2,centerY=H/2;
+const sectorColors=['rgba(255,153,153,.18)','rgba(153,255,153,.18)','rgba(153,153,255,.18)','rgba(255,255,153,.18)','rgba(255,153,255,.18)','rgba(153,255,255,.18)'];
 const sectorAccents=['#ff9999','#99ff99','#9999ff','#ffff99','#ff99ff','#99ffff'];
 let points=[];
 
+// Offscreen canvas for static grid (performance)
+const offscreen=document.createElement('canvas');
+offscreen.width=W;offscreen.height=H;
+const offCtx=offscreen.getContext('2d');
+let gridDirty=true;
+
 function eToPixel(a,b){
-  // Eisenstein point (a + bω) to pixel coords
-  // ω = (-1 + i√3)/2, so real = a - b/2, imag = b*√3/2
-  return [ox+(a-b*0.5)*SCALE, oy-(b*SQ3/2)*SCALE];
+  return [centerX+(a-b*0.5)*SCALE, centerY-(b*SQ3/2)*SCALE];
 }
 
 function pixelToE(px,py){
-  const x=(px-ox)/SCALE, y=-(py-oy)/SCALE;
-  // Inverse: a = x + y/√3, b = 2y/√3
-  const b=2*y/SQ3, a=x+y/SQ3;
+  const x=(px-centerX)/SCALE, y=-(py-centerY)/SCALE;
+  const b=2*y/SQ3, a=x+b*0.5;
   return [a,b];
 }
 
+function eDist2(a1,b1,a2,b2){
+  const da=a1-a2, db=b1-b2;
+  const dx=da-db*0.5, dy=db*SQ3/2;
+  return dx*dx+dy*dy;
+}
+
 function snapToLattice(a,b){
-  // Round to nearest Eisenstein integer
-  // Use the standard hex rounding algorithm
   const ra=Math.round(a), rb=Math.round(b);
-  const diff_a=a-ra, diff_b=b-rb;
-  if(Math.abs(diff_a)>Math.abs(diff_b)){
-    return [ra+Math.round(diff_a+diff_b*0.5), rb]; // Simplified
-  } else {
-    return [ra, rb+Math.round(diff_b+diff_a*0.5)];
+  const candidates=[[ra,rb],[ra+1,rb-1],[ra-1,rb+1]];
+  let best=0, bestDist=eDist2(a,b,candidates[0][0],candidates[0][1]);
+  for(let i=1;i<3;i++){
+    const d=eDist2(a,b,candidates[i][0],candidates[i][1]);
+    if(d<bestDist){bestDist=d;best=i;}
   }
+  return [candidates[best][0],candidates[best][1]];
 }
 
 function getSector(a,b){
-  // 6 Weyl sectors based on angle of Eisenstein integer
-  const angle=Math.atan2(b*SQ3/2, a-b*0.5);
+  const real=a-b*0.5, imag=b*SQ3/2;
+  if(real===0&&imag===0)return 0;
+  const angle=Math.atan2(imag,real);
   return Math.floor(((angle%(Math.PI*2))+Math.PI*2)%(Math.PI*2)/(Math.PI/3));
 }
 
 function getError(a,b,sa,sb){
-  const dx=a-sa,dy=b-sb;
-  return Math.sqrt((dx-dy*0.5)**2+(dy*SQ3/2)**2);
+  return Math.sqrt(eDist2(a,b,sa,sb));
 }
 
-function drawGrid(){
-  ctx.clearRect(0,0,W,H);
-  // Determine visible range
-  const minA=Math.floor(-W/2/SCALE)-2, maxA=Math.ceil(W/2/SCALE)+2;
-  const minB=Math.floor(-H/2/SCALE)-2, maxB=Math.ceil(H/2/SCALE)+2;
-  // Draw sector fills
+function drawStaticGrid(){
+  offCtx.clearRect(0,0,W,H);
+  const halfW=Math.ceil(W/2/SCALE)+3;
+  const halfH=Math.ceil(H/2/SCALE)+3;
+  const minA=-halfW, maxA=halfW;
+  const minB=-halfH, maxB=halfH;
+
+  // Sector hex fills
   for(let a=minA;a<=maxA;a++){
     for(let b=minB;b<=maxB;b++){
       const [px,py]=eToPixel(a,b);
       if(px<-SCALE||px>W+SCALE||py<-SCALE||py>H+SCALE)continue;
       const s=getSector(a,b);
-      // Small hex fill
-      ctx.beginPath();
+      offCtx.beginPath();
       for(let i=0;i<6;i++){
         const ang=Math.PI/3*i+Math.PI/6;
-        const hx=px+SCALE*0.4*Math.cos(ang), hy=py+SCALE*0.4*Math.sin(ang);
-        i===0?ctx.moveTo(hx,hy):ctx.lineTo(hx,hy);
+        const hx=px+SCALE*0.35*Math.cos(ang), hy=py+SCALE*0.35*Math.sin(ang);
+        i===0?offCtx.moveTo(hx,hy):offCtx.lineTo(hx,hy);
       }
-      ctx.closePath();ctx.fillStyle=sectorColors[s];ctx.fill();
+      offCtx.closePath();offCtx.fillStyle=sectorColors[s];offCtx.fill();
     }
   }
+
   // Grid lines
-  ctx.strokeStyle='#ffffff08';ctx.lineWidth=1;
-  // Lines of constant a
+  offCtx.strokeStyle='#ffffff0a';offCtx.lineWidth=1;
   for(let a=minA;a<=maxA;a++){
     const [x1,y1]=eToPixel(a,minB),[x2,y2]=eToPixel(a,maxB);
-    ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+    offCtx.beginPath();offCtx.moveTo(x1,y1);offCtx.lineTo(x2,y2);offCtx.stroke();
   }
-  // Lines of constant b
   for(let b=minB;b<=maxB;b++){
     const [x1,y1]=eToPixel(minA,b),[x2,y2]=eToPixel(maxA,b);
-    ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+    offCtx.beginPath();offCtx.moveTo(x1,y1);offCtx.lineTo(x2,y2);offCtx.stroke();
   }
+
   // Lattice points
   for(let a=minA;a<=maxA;a++){
     for(let b=minB;b<=maxB;b++){
       const [px,py]=eToPixel(a,b);
       if(px<0||px>W||py<0||py>H)continue;
-      ctx.beginPath();ctx.arc(px,py,2.5,0,Math.PI*2);
-      ctx.fillStyle='#ffffff20';ctx.fill();
+      offCtx.beginPath();offCtx.arc(px,py,2,0,Math.PI*2);
+      offCtx.fillStyle='#ffffff25';offCtx.fill();
     }
   }
+  gridDirty=false;
 }
 
 function drawPoints(){
   for(const p of points){
-    const [ox2,oy2]=eToPixel(p.origA,p.origB);
-    const [sx,sy]=eToPixel(p.snapA,p.snapB);
-    // Dashed line
+    const [clickPx,clickPy]=eToPixel(p.origA,p.origB);
+    const [snapPx,snapPy]=eToPixel(p.snapA,p.snapB);
     ctx.setLineDash([4,4]);ctx.strokeStyle='#ffffff55';ctx.lineWidth=1;
-    ctx.beginPath();ctx.moveTo(ox2,oy2);ctx.lineTo(sx,sy);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(clickPx,clickPy);ctx.lineTo(snapPx,snapPy);ctx.stroke();
     ctx.setLineDash([]);
-    // Original (red)
-    ctx.beginPath();ctx.arc(ox2,oy2,5,0,Math.PI*2);ctx.fillStyle='#ff5555';ctx.fill();
-    // Snapped (sector color)
-    ctx.beginPath();ctx.arc(sx,sy,6,0,Math.PI*2);
+    ctx.beginPath();ctx.arc(clickPx,clickPy,5,0,Math.PI*2);ctx.fillStyle='#ff555566';ctx.fill();
+    ctx.strokeStyle='#ff5555';ctx.lineWidth=1;ctx.stroke();
+    ctx.beginPath();ctx.arc(snapPx,snapPy,6,0,Math.PI*2);
     ctx.fillStyle=sectorAccents[p.sector];ctx.fill();
-    ctx.strokeStyle='#fff';ctx.lineWidth=1;ctx.stroke();
+    ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.stroke();
   }
 }
 
@@ -166,21 +184,32 @@ let mouseE=[0,0],mouseSnap=[0,0];
 function drawHover(){
   const [px,py]=eToPixel(mouseE[0],mouseE[1]);
   const [sx,sy]=eToPixel(mouseSnap[0],mouseSnap[1]);
-  // Ghost original
-  ctx.beginPath();ctx.arc(px,py,4,0,Math.PI*2);ctx.fillStyle='#ff555566';ctx.fill();
-  // Ghost snap
-  ctx.beginPath();ctx.arc(sx,sy,5,0,Math.PI*2);ctx.fillStyle='#00d4ff44';ctx.fill();
-  // Line
-  ctx.setLineDash([3,3]);ctx.strokeStyle='#ffffff33';ctx.lineWidth=1;
+  ctx.beginPath();ctx.arc(px,py,4,0,Math.PI*2);ctx.fillStyle='#ff555544';ctx.fill();
+  ctx.strokeStyle='#ff555522';ctx.lineWidth=1;ctx.stroke();
+  ctx.beginPath();ctx.arc(sx,sy,5,0,Math.PI*2);ctx.fillStyle='#00d4ff33';ctx.fill();
+  ctx.strokeStyle='#00d4ff33';ctx.lineWidth=1;ctx.stroke();
+  ctx.setLineDash([3,3]);ctx.strokeStyle='#ffffff22';ctx.lineWidth=1;
   ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(sx,sy);ctx.stroke();
   ctx.setLineDash([]);
+  const err=getError(mouseE[0],mouseE[1],mouseSnap[0],mouseSnap[1]);
+  if(err>0.01){
+    const mx=(px+sx)/2, my=(py+sy)/2;
+    ctx.font='10px system-ui';ctx.fillStyle='#888';ctx.textAlign='center';
+    ctx.fillText('Δ'+err.toFixed(3),mx,my-6);
+  }
 }
 
-function redraw(){drawGrid();drawPoints();drawHover();}
+function redraw(){
+  if(gridDirty)drawStaticGrid();
+  ctx.clearRect(0,0,W,H);
+  ctx.drawImage(offscreen,0,0);
+  drawPoints();
+  drawHover();
+}
 
-canvas.addEventListener('mousemove',e=>{
+function handlePointer(clientX,clientY){
   const r=canvas.getBoundingClientRect();
-  const mx=e.clientX-r.left, my=e.clientY-r.top;
+  const mx=clientX-r.left, my=clientY-r.top;
   mouseE=pixelToE(mx,my);
   mouseSnap=snapToLattice(mouseE[0],mouseE[1]);
   document.getElementById('mouse').textContent=`(${mouseE[0].toFixed(3)}, ${mouseE[1].toFixed(3)})`;
@@ -188,13 +217,15 @@ canvas.addEventListener('mousemove',e=>{
   const err=getError(mouseE[0],mouseE[1],mouseSnap[0],mouseSnap[1]);
   const el=Math.min(11,Math.floor(err*12));
   document.getElementById('encode').innerHTML=
-    `a = <b>${mouseSnap[0]}</b><br>b = <b>${mouseSnap[1]}</b><br>sector = <b style="color:${sectorAccents[s]}">${s}</b><br>err_lvl = <b>${el}</b>`;
+    `snap = (<b>${mouseSnap[0]}</b>, <b>${mouseSnap[1]}</b>)<br>`+
+    `sector = <b style="color:${sectorAccents[s]}">${s}</b><br>`+
+    `error_level = <b>${el}</b> &nbsp;|&nbsp; σ = <b>${err.toFixed(4)}</b>`;
   redraw();
-});
+}
 
-canvas.addEventListener('click',e=>{
+function placePoint(clientX,clientY){
   const r=canvas.getBoundingClientRect();
-  const mx=e.clientX-r.left, my=e.clientY-r.top;
+  const mx=clientX-r.left, my=clientY-r.top;
   const [a,b]=pixelToE(mx,my);
   const [sa,sb]=snapToLattice(a,b);
   const s=getSector(sa,sb);
@@ -203,11 +234,27 @@ canvas.addEventListener('click',e=>{
   const list=document.getElementById('plist');
   if(points.length===1)list.innerHTML='';
   const div=document.createElement('div');
-  div.textContent=`(${sa}, ${sb}) s${s} Δ${err.toFixed(3)}`;
+  div.textContent=`(${sa}, ${sb}) s${s}  Δ${err.toFixed(3)}`;
   div.style.color=sectorAccents[s];
+  div.title=`Clicked: (${a.toFixed(3)}, ${b.toFixed(3)})`;
   list.appendChild(div);
   list.scrollTop=list.scrollHeight;
   redraw();
+}
+
+// Mouse events
+canvas.addEventListener('mousemove',e=>handlePointer(e.clientX,e.clientY));
+canvas.addEventListener('click',e=>placePoint(e.clientX,e.clientY));
+
+// Touch events
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  const t=e.touches[0];
+  handlePointer(t.clientX,t.clientY);
+},{passive:false});
+canvas.addEventListener('touchend',e=>{
+  const t=e.changedTouches[0];
+  placePoint(t.clientX,t.clientY);
 });
 
 document.getElementById('clearBtn').onclick=()=>{
@@ -218,5 +265,13 @@ document.getElementById('clearBtn').onclick=()=>{
 
 redraw();
 </script>
+
+<div id="crossnav">
+  <a class="hub" href="../simulators/index.html" target="_blank">⚒️ Universe</a>
+  <span class="sep">·</span>
+  <span class="label">Related</span>
+  <a class="link" href="../constraint-demos/drift-race.html" target="_blank">⚡ Drift Race</a> <a class="link" href="../simulators/flux-vm.html" target="_blank">⚙️ FLUX VM</a> <a class="link" href="../simulators/safe-arm.html" target="_blank">🦾 Safe Arm</a>
+</div>
+
 </body>
 </html>
