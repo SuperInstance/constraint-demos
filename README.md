@@ -1,5 +1,7 @@
 # constraint-demos
 
+
+![CI](https://github.com/SuperInstance/constraint-demos/actions/workflows/ci.yml/badge.svg)
 **Browser-based constraint theory visualizations and interactive demos.**
 
 Shows constraint snapping, drift curves, hex lattice geometry, and the conservation law in action. Educational/demonstration repo for constraint-theory-core.
