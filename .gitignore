@@ -1,0 +1,38 @@
+# Build outputs
+*.js
+*.js.map
+*.min.js
+*.css
+*.min.css
+
+# Node
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Artifacts
+dist/
+build/
+out/
